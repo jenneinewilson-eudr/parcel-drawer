@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EUDR Parcel Drawer</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+  <style>
+    html,body,#map { height:100%; margin:0; }
+    .toolbar { position:fixed; left:10px; right:10px; bottom:10px; display:flex; gap:8px; }
+    button { padding:10px 14px; border:0; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.1); }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="toolbar">
+    <button id="btnCopy">Copy GeoJSON</button>
+    <button id="btnSave" style="background:#0a7cff;color:#fff;">Save to Server</button>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script>
+    // --- read params from URL: ?consignmentId=XYZ&webhook=https://...
+    const params = new URLSearchParams(location.search);
+    const CONSIGNMENT_ID = params.get('consignmentId') || '';
+    const WEBHOOK_URL    = params.get('webhook') || ''; // your Make webhook
+
+    // --- map
+    const map = L.map('map').setView([6.13, 1.21], 12); // set a sensible default; you can change via &lat=&lon=&z=
+    const lat = parseFloat(params.get('lat')), lon = parseFloat(params.get('lon')), z = parseInt(params.get('z')||'12',10);
+    if (!isNaN(lat) && !isNaN(lon)) map.setView([lat,lon], z);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 20, attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    const drawnItems = new L.FeatureGroup().addTo(map);
+    const drawControl = new L.Control.Draw({
+      draw: {
+        polygon: { allowIntersection: false, showArea: true, shapeOptions: { color: '#e53935' } },
+        polyline:false, rectangle:false, circle:false, circlemarker:false, marker:false
+      },
+      edit: { featureGroup: drawnItems, edit: true, remove: true }
+    });
+    map.addControl(drawControl);
+
+    let currentLayer = null;
+
+    map.on(L.Draw.Event.CREATED, function (e) {
+      if (currentLayer) drawnItems.removeLayer(currentLayer);
+      currentLayer = e.layer;
+      drawnItems.addLayer(currentLayer);
+      // auto-fit
+      map.fitBounds(currentLayer.getBounds(), { padding: [30,30] });
+    });
+
+    // helper: get polygon as clean GeoJSON Polygon
+    function getPolygonGeoJSON() {
+      if (!currentLayer) return null;
+      const gj = currentLayer.toGeoJSON();
+      // Force Polygon geometry (not FeatureCollection)
+      return gj.geometry && gj.geometry.type === 'Polygon' ? gj.geometry : gj.geometry;
+    }
+
+    document.getElementById('btnCopy').onclick = async () => {
+      const geom = getPolygonGeoJSON();
+      if (!geom) return alert('Draw a polygon first.');
+      const text = JSON.stringify(geom);
+      try { await navigator.clipboard.writeText(text); alert('GeoJSON copied.'); }
+      catch { prompt('Copy GeoJSON:', text); }
+    };
+
+    document.getElementById('btnSave').onclick = async () => {
+      const geom = getPolygonGeoJSON();
+      if (!geom) return alert('Draw a polygon first.');
+      if (!WEBHOOK_URL) return alert('Missing webhook URL. Add ?webhook=... to the page URL.');
+      const payload = {
+        consignmentId: CONSIGNMENT_ID,
+        geometry: geom,              // GeoJSON Polygon
+        geometryType: 'Polygon',
+        source: 'parcel-drawer'
+      };
+      try {
+        const res = await fetch(WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('Server error');
+        alert('Saved. You can close this window.');
+      } catch (e) {
+        alert('Could not save. Check your webhook URL.\n' + e.message);
+      }
+    };
+  </script>
+</body>
+</html>
